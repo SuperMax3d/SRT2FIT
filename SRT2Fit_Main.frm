@@ -331,7 +331,10 @@ End Sub
 '   P_drag  = 0.5 * rho * Cd * A * vH^3          aerodynamic drag
 '   P_climb = m*g * vV                            climb work (positive only)
 
-Private Sub BuildRecords(frames() As DJIFrame, frameCount As Long, droneKg As Double, offsetSec As Double, scaleT As Double, recs() As FITRecord)
+Private Sub BuildRecords( _
+        frames() As DJIFrame, frameCount As Long, _
+        droneKg As Double, offsetSec As Double, scaleT As Double, _
+        recs() As FITRecord)
 
     Const RHO  As Double = 1.225
     Const CD   As Double = 0.4
@@ -372,6 +375,11 @@ Private Sub BuildRecords(frames() As DJIFrame, frameCount As Long, droneKg As Do
     Dim totalDist As Double: totalDist = 0
     Dim segStart  As Long:   segStart = 0    ' index of last GPS change
 
+    ' Max plausible drone speed (m/s). DJI drones top out ~25 m/s.
+    ' Any interpolated segment speed above this threshold is a GPS glitch
+    ' (e.g. lat/lon briefly reads 0,0 = null island) and must be discarded.
+    Const MAX_SPEED_MS As Double = 50#   ' generous ceiling: 180 km/h
+
     i = 1
     Do While i <= frameCount - 1
         Dim latChanged As Boolean
@@ -380,8 +388,6 @@ Private Sub BuildRecords(frames() As DJIFrame, frameCount As Long, droneKg As Do
                      (frames(i).AbsAlt <> frames(segStart).AbsAlt)
 
         If latChanged Or (i = frameCount - 1) Then
-            ' End of a GPS segment: segStart .. i-1 all had same coords
-            ' (if latChanged) or we are at the last frame
             Dim segEnd As Long
             If latChanged Then
                 segEnd = i - 1
@@ -389,25 +395,48 @@ Private Sub BuildRecords(frames() As DJIFrame, frameCount As Long, droneKg As Do
                 segEnd = i
             End If
 
-            ' Distance from segStart's coords to segEnd+1 (the new point)
             Dim nextIdx As Long
             If latChanged Then nextIdx = i Else nextIdx = i
+
+            ' Skip any segment where either endpoint is 0,0 (GPS null island /
+            ' signal loss). Haversine from real coords to 0,0 is ~9,600 km and
+            ' produces impossible speeds that overflow CLng downstream.
+            Dim startLat As Double: startLat = frames(segStart).Lat
+            Dim startLon As Double: startLon = frames(segStart).Lon
+            Dim endLat   As Double: endLat = frames(nextIdx).Lat
+            Dim endLon   As Double: endLon = frames(nextIdx).Lon
+
+            Dim validGPS As Boolean
+            validGPS = (startLat <> 0# Or startLon <> 0#) And _
+                       (endLat <> 0# Or endLon <> 0#)
+
             Dim dH As Double
-            dH = Haversine(frames(segStart).Lat, frames(segStart).Lon, _
-                           frames(nextIdx).Lat, frames(nextIdx).Lon)
             Dim dV As Double
-            dV = frames(nextIdx).AbsAlt - frames(segStart).AbsAlt
             Dim d3D As Double
-            d3D = Sqr(dH * dH + dV * dV)
+            Dim segSpeed3 As Double
+            Dim segSpeedV As Double
 
-            ' Time span of this GPS segment in seconds
-            Dim segDtSec As Double
-            segDtSec = (adjUTCms(nextIdx) - adjUTCms(segStart)) / 1000#
-            If segDtSec <= 0# Then segDtSec = 0.001
+            If validGPS Then
+                dH = Haversine(startLat, startLon, endLat, endLon)
+                dV = frames(nextIdx).AbsAlt - frames(segStart).AbsAlt
+                d3D = Sqr(dH * dH + dV * dV)
 
-            Dim segSpeedH As Double: segSpeedH = dH / segDtSec
-            Dim segSpeedV As Double: segSpeedV = dV / segDtSec
-            Dim segSpeed3 As Double: segSpeed3 = d3D / segDtSec
+                Dim segDtSec As Double
+                segDtSec = (adjUTCms(nextIdx) - adjUTCms(segStart)) / 1000#
+                If segDtSec <= 0# Then segDtSec = 0.001
+
+                segSpeed3 = d3D / segDtSec
+                segSpeedV = dV / segDtSec
+
+                ' Sanity-clamp: if computed speed exceeds the physical maximum,
+                ' this is a GPS glitch — treat the segment as stationary.
+                If segSpeed3 > MAX_SPEED_MS Then
+                    segSpeed3 = 0#: segSpeedV = 0#: d3D = 0#
+                End If
+            Else
+                ' GPS unavailable for this segment — treat as stationary
+                dH = 0#: dV = 0#: d3D = 0#: segSpeed3 = 0#: segSpeedV = 0#
+            End If
 
             ' Distribute distance and speed evenly across every frame in segment
             Dim nFrames As Long: nFrames = nextIdx - segStart
@@ -482,12 +511,17 @@ Private Sub BuildRecords(frames() As DJIFrame, frameCount As Long, droneKg As Do
             ' Altitude: FIT UINT16 = (m + 500) * 5
             r.Altitude = CLng((frames(i).AbsAlt + 500#) * 5#)
 
-            ' Speed mm/s as UINT16
-            r.Speed = CLng(smoothSpd * 1000#)
-            If r.Speed < 0 Then r.Speed = 0
+            ' Speed mm/s as UINT16 — clamp to UINT16 max (65535 = 235 km/h)
+            Dim speedMms As Double: speedMms = smoothSpd * 1000#
+            If speedMms > 65535# Then speedMms = 65535#
+            If speedMms < 0# Then speedMms = 0#
+            r.Speed = CLng(speedMms)
 
-            ' Distance cm as UINT32
-            r.Distance = CLng(cumDistM(i) * 100#)
+            ' Distance cm as UINT32 — clamp to Long max to avoid CLng overflow
+            Dim distCm As Double: distCm = cumDistM(i) * 100#
+            If distCm > 2147483647# Then distCm = 2147483647#
+            If distCm < 0# Then distCm = 0#
+            r.Distance = CLng(distCm)
 
             ' Acceleration m/s²
             r.Accel = smoothSpd - prevSpeedMs
@@ -993,13 +1027,9 @@ Private Function SafeUbound(Arr() As String) As Long
     SafeUbound = UBound(Arr)
 End Function
 
-
-
-
 Private Sub Form_Load()
     Dim i As Long
     Dim DataArr() As String
-    
     
     DataArr = Split(ReadTxt(App.path & "\SRT2FIT.txt"), vbCrLf)
     If (SafeUbound(DataArr) > 2) Then
@@ -1013,14 +1043,14 @@ Private Sub Form_Load()
         Text_Scale.Text = "1"
         Text_Weight.Text = "0.249"
     End If
-
-
 End Sub
 
 Private Sub Cmd_Process_Click()
     On Error GoTo ErrorHandler
     Dim srtFile As String
     Dim fitFile As String
+    Dim SkippedFiles As String
+    Dim ProcessedCount As Long
 
     Dim weightKg As Double
     Dim offsetSec As Double
@@ -1032,7 +1062,7 @@ Private Sub Cmd_Process_Click()
     scaleF = EvalExpr(Text_Scale.Text)
     weightKg = EvalExpr(Text_Weight.Text)
     
-    
+    ProcessedCount = 0
     Files = ListFiles(Text_Folder.Text, "*.SRT")
     
     If (SafeUbound(Files) > -1) Then
@@ -1042,18 +1072,24 @@ Private Sub Cmd_Process_Click()
                 srtFile = Files(i)
                 fitFile = Left(srtFile, InStrRev(srtFile, ".")) & "fit"
                 ConvertDJISRTtoFIT srtFile, fitFile, weightKg, offsetSec, scaleF
-                
+                ProcessedCount = ProcessedCount + 1
             End If
         Next i
         
-    
-        MsgBox "Conversion Completed!"
+        If (SkippedFiles <> "") Then
+            MsgBox "Conversion Completed!" & vbCrLf & "Processed Files: " & ProcessedCount & "Skipped the following files: " & SkippedFiles
+        Else
+            MsgBox "Conversion Completed!" & vbCrLf & "Processed Files: " & ProcessedCount
+        End If
     Else
         MsgBox "No SRT file found in: " & Text_Folder.Text, vbCritical
     End If
+    
     Exit Sub
 ErrorHandler:
-    MsgBox "No SRT file found in: " & Text_Folder.Text, vbCritical
+    SkippedFiles = SkippedFiles & vbCrLf & Files(i) & " (Error: " & Err.Desc & ")"
+    ProcessedCount = ProcessedCount - 1
+    Resume Next
 End Sub
 
 '--------------------------------
