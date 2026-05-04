@@ -1046,7 +1046,7 @@ Private Sub Form_Load()
 End Sub
 
 Private Sub Cmd_Process_Click()
-    On Error GoTo ErrorHandler
+    'On Error GoTo ErrorHandler
     Dim srtFile As String
     Dim fitFile As String
     Dim SkippedFiles As String
@@ -1180,16 +1180,35 @@ End Function
 
 Private Function ParseNumber() As Double
     Dim startPos As Long
+    Dim sign As Double
+    
+    sign = 1
+    
+    ' Handle unary + or -
+    If pos <= Len(expr) Then
+        Select Case Mid$(expr, pos, 1)
+            Case "+"
+                pos = pos + 1
+            Case "-"
+                sign = -1
+                pos = pos + 1
+        End Select
+    End If
+    
     startPos = pos
     
-    Do While pos <= Len(expr) And _
-        (Mid$(expr, pos, 1) Like "[0-9.]")
+    ' Read numeric part
+    Do While pos <= Len(expr) And (Mid$(expr, pos, 1) Like "[0-9.]")
         pos = pos + 1
     Loop
     
-    ParseNumber = CDbl(Mid$(expr, startPos, pos - startPos))
+    ' Convert
+    If startPos = pos Then
+        Err.Raise vbObjectError + 1, , "Invalid number in expression"
+    End If
+    
+    ParseNumber = sign * CDbl(Mid$(expr, startPos, pos - startPos))
 End Function
-
 Private Sub Form_Unload(Cancel As Integer)
     On Error Resume Next
     Dim Str As String
