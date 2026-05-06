@@ -16,7 +16,7 @@ Begin VB.Form SRT2Fit
       Height          =   375
       Left            =   1320
       TabIndex        =   8
-      ToolTipText     =   "Weight in g"
+      ToolTipText     =   "Weight in g. Neo: 135g, Neo 2: 161g, Avata 2: 377g, Avata 360: 455g"
       Top             =   1560
       Width           =   4935
    End
@@ -32,7 +32,7 @@ Begin VB.Form SRT2Fit
       Height          =   375
       Left            =   1320
       TabIndex        =   6
-      ToolTipText     =   "Default 0. Unit in seconds. 4 * 60 * 60 + 5 Seems to work with Avata360"
+      ToolTipText     =   $"SRT2Fit_Main.frx":0000
       Top             =   600
       Width           =   4935
    End
@@ -338,7 +338,7 @@ Private Sub BuildRecords( _
 
     Const RHO  As Double = 1.225
     Const CD   As Double = 0.4
-    Const A    As Double = 0.04
+    Const a    As Double = 0.04
     Const G    As Double = 9.80665
     Const PI   As Double = 3.14159265358979
     Const SC   As Double = 2147483648# / 180#   ' degrees -> semicircles
@@ -529,7 +529,7 @@ Private Sub BuildRecords( _
             ' Power
             Dim vH As Double: vH = smoothSpd
             Dim vV As Double: vV = interpVV(i)
-            Dim P_drag  As Double: P_drag = 0.5 * RHO * CD * A * vH * vH * vH
+            Dim P_drag  As Double: P_drag = 0.5 * RHO * CD * a * vH * vH * vH
             Dim P_climb As Double
             If vV > 0# Then P_climb = droneKg * G * vV Else P_climb = 0#
             Dim P_total As Double: P_total = P_hover + P_drag + P_climb
@@ -930,11 +930,11 @@ Private Function Haversine(lat1 As Double, lon1 As Double, _
     Const PI As Double = 3.14159265358979
     Dim dlat As Double: dlat = (lat2 - lat1) * PI / 180#
     Dim dlon As Double: dlon = (lon2 - lon1) * PI / 180#
-    Dim A As Double
-    A = Sin(dlat / 2) * Sin(dlat / 2) + _
+    Dim a As Double
+    a = Sin(dlat / 2) * Sin(dlat / 2) + _
         Cos(lat1 * PI / 180#) * Cos(lat2 * PI / 180#) * _
         Sin(dlon / 2) * Sin(dlon / 2)
-    Haversine = r * 2 * Atn(Sqr(A) / Sqr(1 - A))
+    Haversine = r * 2 * Atn(Sqr(a) / Sqr(1 - a))
 End Function
 
 ' --- SRT parsing helpers -----------------------------------------------------
@@ -967,11 +967,11 @@ Private Function ParseDateTimeMs(dt As String) As Double
     ss = CDbl(Mid(dt, 18))   ' e.g. "29.733"
 
     ' Julian Day Number for Gregorian calendar
-    Dim A As Long, Y As Long, m As Long, jdn As Long
-    A = (14 - mo) \ 12
-    Y = yr + 4800 - A
-    m = mo + 12 * A - 3
-    jdn = dy + (153 * m + 2) \ 5 + 365 * Y + Y \ 4 - Y \ 100 + Y \ 400 - 32045
+    Dim a As Long, y As Long, m As Long, jdn As Long
+    a = (14 - mo) \ 12
+    y = yr + 4800 - a
+    m = mo + 12 * a - 3
+    jdn = dy + (153 * m + 2) \ 5 + 365 * y + y \ 4 - y \ 100 + y \ 400 - 32045
 
     ' Unix epoch JDN = 2440588 (1970-01-01)
     Dim daysSinceEpoch As Long
@@ -1053,12 +1053,33 @@ Private Sub Cmd_Process_Click()
     Dim ProcessedCount As Long
 
     Dim weightKg As Double
-    Dim offsetSec As Double
+    Dim offsetSecEXPR As Double
+    Dim offsetSecGPS As Double
+    Dim offsetSecTotal As Double
     Dim scaleF As Double
     Dim Files() As String
     Dim i As Long
     
-    offsetSec = EvalExpr(Text_Offset.Text)
+    Dim OffsetMode As Long
+    
+    
+    If (InStr(UCase$(Text_Offset.Text), "NEGGPSSTART") > 0) Then
+        OffsetMode = 1
+        offsetSecEXPR = EvalExpr(Replace$(Text_Offset.Text, "NEGGPSSTART", "", 1, -1, vbBinaryCompare))
+    ElseIf (InStr(UCase$(Text_Offset.Text), "GPSSTART") > 0) Then
+        OffsetMode = 2
+        offsetSecEXPR = EvalExpr(Replace$(Text_Offset.Text, "GPSSTART", "", 1, -1, vbBinaryCompare))
+    ElseIf (InStr(UCase$(Text_Offset.Text), "NEGGPSSTOP") > 0) Then
+        OffsetMode = 3
+        offsetSecEXPR = EvalExpr(Replace$(Text_Offset.Text, "NEGGPSSTOP", "", 1, -1, vbBinaryCompare))
+    ElseIf (InStr(UCase$(Text_Offset.Text), "GPSSTOP") > 0) Then
+        OffsetMode = 4
+        offsetSecEXPR = EvalExpr(Replace$(Text_Offset.Text, "GPSSTOP", "", 1, -1, vbBinaryCompare))
+    Else
+        OffsetMode = 0
+        offsetSecEXPR = EvalExpr(Text_Offset.Text)
+    End If
+    
     scaleF = EvalExpr(Text_Scale.Text)
     weightKg = EvalExpr(Text_Weight.Text)
     
@@ -1071,7 +1092,21 @@ Private Sub Cmd_Process_Click()
             If (Files(i) <> "") Then
                 srtFile = Files(i)
                 fitFile = Left(srtFile, InStrRev(srtFile, ".")) & "fit"
-                ConvertDJISRTtoFIT srtFile, fitFile, weightKg, offsetSec, scaleF
+                
+                If (OffsetMode = 1) Then
+                    offsetSecGPS = OffsetFromStartTime(srtFile, 0)
+                ElseIf (OffsetMode = 2) Then
+                    offsetSecGPS = -OffsetFromStartTime(srtFile, 0)
+                ElseIf (OffsetMode = 3) Then
+                    offsetSecGPS = OffsetFromStopTime(srtFile, 0)
+                ElseIf (OffsetMode = 4) Then
+                    offsetSecGPS = -OffsetFromStopTime(srtFile, 0)
+                Else
+                    offsetSecGPS = 0
+                End If
+                offsetSecTotal = offsetSecGPS + offsetSecEXPR
+                    
+                ConvertDJISRTtoFIT srtFile, fitFile, weightKg, offsetSecTotal, scaleF
                 ProcessedCount = ProcessedCount + 1
             End If
         Next i
@@ -1204,10 +1239,11 @@ Private Function ParseNumber() As Double
     
     ' Convert
     If startPos = pos Then
-        Err.Raise vbObjectError + 1, , "Invalid number in expression"
+        'Err.Raise vbObjectError + 1, , "Invalid number in expression"
+        ParseNumber = 0
+    Else
+        ParseNumber = sign * CDbl(Mid$(expr, startPos, pos - startPos))
     End If
-    
-    ParseNumber = sign * CDbl(Mid$(expr, startPos, pos - startPos))
 End Function
 Private Sub Form_Unload(Cancel As Integer)
     On Error Resume Next
@@ -1230,7 +1266,7 @@ Private Sub Text_Folder_KeyUp(KeyCode As Integer, Shift As Integer)
     End If
 End Sub
 
-Private Sub Text_Folder_OLEDragDrop(Data As DataObject, Effect As Long, Button As Integer, Shift As Integer, X As Single, Y As Single)
+Private Sub Text_Folder_OLEDragDrop(Data As DataObject, Effect As Long, Button As Integer, Shift As Integer, X As Single, y As Single)
     Dim filePath As String
     
     On Error Resume Next
@@ -1278,3 +1314,225 @@ Private Sub Text_Weight_KeyUp(KeyCode As Integer, Shift As Integer)
         KeyCode = 0 ' prevent default behavior
     End If
 End Sub
+
+
+
+' --- Offset helpers ----------------------------------------------------------
+'
+' DJI file naming convention:
+'   DJI_YYYYMMDD_HHMMSS_####_D.SRT
+'   The date+time in the filename is the LOCAL time the recording STARTED,
+'   as set by the device clock (which may differ from GPS UTC).
+'
+' These two functions parse the filename timestamp and the embedded GPS
+' timestamps from the SRT file to compute the offset (in seconds) that
+' should be passed as timeOffsetSec to ConvertDJISRTtoFIT.
+'
+' OffsetFromStartTime:
+'   offset = GPS_first_frame_UTC - filename_start_time_UTC_assumed
+'   Use this when the filename clock was set to UTC (or a known timezone).
+'   A positive result means the GPS time is ahead of the filename clock.
+'
+' OffsetFromStopTime:
+'   offset = GPS_last_frame_UTC - filename_start_time_UTC_assumed - video_duration
+'   The video duration is (last_SRT_timecode - first_SRT_timecode) in seconds.
+'   Use this when you trust the filename's recording-stop alignment better
+'   (e.g. the clock drifted during a long flight).
+'
+' Both functions return the offset IN SECONDS (Double, can be negative).
+' Pass the result directly to ConvertDJISRTtoFIT as timeOffsetSec.
+'
+' Parameters:
+'   srtPath   - full path to the .SRT file
+'   utcOffsetHours - hours to ADD to the filename timestamp to get UTC
+'                    e.g. -4 for EDT, -5 for EST, 0 if filename is already UTC
+
+' -- Helper: parse "YYYYMMDD" + "HHMMSS" from DJI filename -------------------
+'   Returns UTC ms since Unix epoch, applying utcOffsetHours correction.
+'   Returns -1 on parse failure.
+Private Function ParseDJIFilenameTimeMs(ByVal srtPath As String, _
+                                        ByVal utcOffsetHours As Double) As Double
+    ' Extract bare filename without extension
+    Dim fname As String
+    Dim p As Long
+    ' Strip directory
+    p = InStrRev(srtPath, "\")
+    If p = 0 Then p = InStrRev(srtPath, "/")
+    If p > 0 Then fname = Mid(srtPath, p + 1) Else fname = srtPath
+    ' Strip extension
+    p = InStrRev(fname, ".")
+    If p > 0 Then fname = Left(fname, p - 1)
+
+    ' Expect pattern: DJI_YYYYMMDD_HHMMSS_...
+    ' Find first underscore-delimited 8-digit date token
+    Dim parts() As String
+    parts = Split(fname, "_")
+
+    Dim datePart As String
+    Dim timePart As String
+    Dim i As Integer
+    For i = 0 To UBound(parts)
+        If Len(parts(i)) = 14 And IsNumeric(parts(i)) Then
+            datePart = Left(parts(i), 8)
+            timePart = Right(parts(i), 6)
+            ' Next token should be 6-digit time
+            'If i + 1 <= UBound(parts) Then
+                'Dim nxt As String: nxt = parts(i + 1)
+                ' strip any trailing non-numeric chars (e.g. "183503")
+                'If Len(nxt) >= 6 And IsNumeric(Left(nxt, 6)) Then
+                '    timePart = Left(nxt, 6)
+                'End If
+            'End If
+            Exit For
+        End If
+    Next i
+
+    If Len(datePart) < 8 Or Len(timePart) < 6 Then
+        ParseDJIFilenameTimeMs = -1
+        Exit Function
+    End If
+
+    Dim yr As Integer:  yr = CInt(Mid(datePart, 1, 4))
+    Dim mo As Integer:  mo = CInt(Mid(datePart, 5, 2))
+    Dim dy As Integer:  dy = CInt(Mid(datePart, 7, 2))
+    Dim hh As Integer:  hh = CInt(Mid(timePart, 1, 2))
+    Dim mm As Integer:  mm = CInt(Mid(timePart, 3, 2))
+    Dim ss As Integer:  ss = CInt(Mid(timePart, 5, 2))
+
+    ' Julian Day Number (Gregorian)
+    Dim a As Long, y As Long, m As Long, jdn As Long
+    a = (14 - mo) \ 12
+    y = yr + 4800 - a
+    m = mo + 12 * a - 3
+    jdn = dy + (153 * m + 2) \ 5 + 365 * y + y \ 4 - y \ 100 + y \ 400 - 32045
+
+    Dim daysSinceEpoch As Long
+    daysSinceEpoch = jdn - 2440588   ' 2440588 = JDN of 1970-01-01
+
+    ' ms since Unix epoch, then apply UTC offset correction
+    ParseDJIFilenameTimeMs = CDbl(daysSinceEpoch) * 86400000# + _
+                             CDbl(hh) * 3600000# + _
+                             CDbl(mm) * 60000# + _
+                             CDbl(ss) * 1000# + _
+                             (-utcOffsetHours) * 3600000#   ' subtract offset to get UTC
+End Function
+
+' -- OffsetFromStartTime -------------------------------------------------------
+' Returns: GPS_first_frame_UTC_sec - filename_assumed_UTC_sec
+' A positive value means the GPS time is ahead of the filename clock.
+' Pass this as timeOffsetSec to align the FIT timestamps to GPS UTC.
+
+Public Function OffsetFromStartTime(ByVal srtPath As String, _
+                                    Optional ByVal utcOffsetHours As Double = 0) As Double
+    ' Parse SRT to get first frame's GPS UTC
+    Dim frames() As DJIFrame
+    Dim frameCount As Long
+    ParseSRT srtPath, frames, frameCount
+
+    If frameCount = 0 Then
+        MsgBox "No frames parsed from: " & srtPath, vbExclamation
+        OffsetFromStartTime = 0
+        Exit Function
+    End If
+
+    ' First valid GPS frame (skip any leading 0,0 null-island frames)
+    Dim firstIdx As Long: firstIdx = -1
+    Dim k As Long
+    For k = 0 To frameCount - 1
+        If frames(k).Lat <> 0# Or frames(k).Lon <> 0# Then
+            firstIdx = k
+            Exit For
+        End If
+    Next k
+
+    If firstIdx < 0 Then
+        MsgBox "No valid GPS frames found in: " & srtPath, vbExclamation
+        OffsetFromStartTime = 0
+        Exit Function
+    End If
+
+    Dim gpsFirstSec  As Double: gpsFirstSec = frames(firstIdx).UTCms / 1000#
+    Dim fileNameMs   As Double: fileNameMs = ParseDJIFilenameTimeMs(srtPath, utcOffsetHours)
+
+    If fileNameMs < 0 Then
+        MsgBox "Could not parse date/time from filename: " & srtPath, vbExclamation
+        OffsetFromStartTime = 0
+        Exit Function
+    End If
+
+    Dim fileNameSec As Double: fileNameSec = fileNameMs / 1000#
+    Dim offsetSec   As Double: offsetSec = gpsFirstSec - fileNameSec
+
+    'MsgBox "Filename start time (UTC): " & Format(fileNameSec, "0.000") & " s" & vbCrLf & _
+           "GPS first frame  (UTC): " & Format(gpsFirstSec, "0.000") & " s" & vbCrLf & _
+           "Offset (GPS - filename): " & Format(offsetSec, "0.000") & " s", _
+           vbInformation, "OffsetFromStartTime"
+
+    OffsetFromStartTime = offsetSec
+End Function
+
+' -- OffsetFromStopTime --------------------------------------------------------
+' Returns the offset such that the END of the GPS track aligns with
+'   filename_start_time + video_duration.
+'
+' offset = GPS_last_frame_UTC - (filename_UTC + video_duration_sec)
+'
+' video_duration is derived from the SRT timecodes (last - first),
+' so it reflects the actual encoded video length regardless of frame rate.
+
+Public Function OffsetFromStopTime(ByVal srtPath As String, _
+                                   Optional ByVal utcOffsetHours As Double = 0) As Double
+    Dim frames() As DJIFrame
+    Dim frameCount As Long
+    ParseSRT srtPath, frames, frameCount
+
+    If frameCount = 0 Then
+        MsgBox "No frames parsed from: " & srtPath, vbExclamation
+        OffsetFromStopTime = 0
+        Exit Function
+    End If
+
+    ' Last valid GPS frame (skip trailing 0,0 null-island frames)
+    Dim lastIdx As Long: lastIdx = -1
+    Dim k As Long
+    For k = frameCount - 1 To 0 Step -1
+        If frames(k).Lat <> 0# Or frames(k).Lon <> 0# Then
+            lastIdx = k
+            Exit For
+        End If
+    Next k
+
+    If lastIdx < 0 Then
+        MsgBox "No valid GPS frames found in: " & srtPath, vbExclamation
+        OffsetFromStopTime = 0
+        Exit Function
+    End If
+
+    ' Video duration from SRT timecodes (ms)
+    Dim videoDurationSec As Double
+    videoDurationSec = (frames(frameCount - 1).TimestampMs - frames(0).TimestampMs) / 1000#
+
+    Dim gpsLastSec   As Double: gpsLastSec = frames(lastIdx).UTCms / 1000#
+    Dim fileNameMs   As Double: fileNameMs = ParseDJIFilenameTimeMs(srtPath, utcOffsetHours)
+
+    If fileNameMs < 0 Then
+        MsgBox "Could not parse date/time from filename: " & srtPath, vbExclamation
+        OffsetFromStopTime = 0
+        Exit Function
+    End If
+
+    Dim fileNameSec  As Double: fileNameSec = fileNameMs / 1000#
+    Dim expectedStop As Double: expectedStop = fileNameSec '+ videoDurationSec
+    Dim offsetSec    As Double: offsetSec = gpsLastSec - expectedStop
+
+    'MsgBox "Filename start time  (UTC): " & Format(fileNameSec, "0.000") & " s" & vbCrLf & _
+           "Video duration            : " & Format(videoDurationSec, "0.000") & " s" & vbCrLf & _
+           "Expected stop (file+dur)  : " & Format(expectedStop, "0.000") & " s" & vbCrLf & _
+           "GPS last frame  (UTC)     : " & Format(gpsLastSec, "0.000") & " s" & vbCrLf & _
+           "Offset (GPS stop - expected): " & Format(offsetSec, "0.000") & " s", _
+           vbInformation, "OffsetFromStopTime"
+
+    OffsetFromStopTime = offsetSec
+End Function
+
+
